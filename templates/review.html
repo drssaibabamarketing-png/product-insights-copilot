@@ -1,0 +1,35 @@
+{% extends "base.html" %}{% block c %}
+<h1>Review &amp; approve</h1>
+<p class="mut">{{ res.product }} · {{ res.info.rows_used }} reviews analysed{% if res.info.window %} · {{ res.info.window[0] }} to {{ res.info.window[1] }}{% else %} · <b class="bad">no date column in CSV, window not applied</b>{% endif %}</p>
+
+<div class="card"><h2>Brief checks</h2>
+{% for name, okk, detail in res.checks %}<span class="pill {{ 'ok' if okk else 'bad' }}">{{ '✓' if okk else '✗' }} {{ name }} ({{ detail }})</span> {% endfor %}</div>
+
+<div class="card"><h2>Step 1 · Themes (max 5, top 3 marked)</h2>
+<table><tr><th></th><th>Theme</th><th>Reviews</th><th>Share</th><th>Avg ★</th><th>1-2★</th></tr>
+{% for t in res.themes %}<tr><td>{{ '★' if t.label in res.top_themes else '' }}</td><td>{{ t.label }}</td><td>{{ t.count }}</td><td>{{ t.share_pct }}%</td><td>{{ t.avg_rating }}</td><td>{{ t.negative_pct }}%</td></tr>{% endfor %}</table>
+<h2 style="margin-top:14px">User quotes</h2>
+{% for q in res.quotes %}<blockquote>"{{ q.quote }}" <span class="mut">({{ q.rating }}★ · {{ q.theme }})</span></blockquote>{% endfor %}
+<h2 style="margin-top:14px">Fee / charge confusion detected</h2>
+<p><b>{{ res.fee.fee }}</b>: {{ res.fee.mentions }} reviews ({{ res.fee.pct_of_reviews }}%), {{ res.fee.negative_mentions }} rated 1-2★.</p>
+{% for q in res.fee.evidence_quotes %}<blockquote>"{{ q }}"</blockquote>{% endfor %}
+<table><tr><th>Fee type scanned</th><th>Mentions</th><th>1-2★</th></tr>{% for c in res.fee.all_candidates %}<tr><td>{{ c.fee }}</td><td>{{ c.mentions }}</td><td>{{ c.negative_mentions }}</td></tr>{% endfor %}</table></div>
+
+<div class="card"><h2>Step 2 · Weekly product pulse</h2><pre>{{ res.pulse | md }}</pre></div>
+<div class="card"><h2>Step 3 · Fee explainer</h2><pre>{{ res.explainer_text | md }}</pre></div>
+
+<div class="card gate"><h2>🔒 MCP approval gate</h2>
+<p>Pending tool calls: {% for t in tools %}<code>{{ t.name }}</code> {% endfor %}</p>
+<ul class="mut"><li><b>append_to_notes</b> payload: date, top_themes, weekly_pulse, identified_fee_issue, explanation_bullets, source_links</li>
+<li><b>create_email_draft</b>: "{{ email.subject }}" (draft only, never sent)</li></ul>
+<details><summary>Preview payloads</summary><pre>{{ notes | tojson(indent=2) }}</pre><hr><pre>{{ email.subject }}
+
+{{ email.body }}</pre></details>
+{% if gate.status == 'pending' %}
+<form method="post" action="/review/{{ rid }}/decide" style="margin-top:12px"><button class="go" name="decision" value="approve">Approve &amp; run actions</button> <button name="decision" value="reject">Reject</button></form>
+{% elif gate.status == 'approved' %}<p class="ok"><b>Approved {{ gate.decided_at }}.</b> Actions executed:</p>
+<ul>{% for n, r in done %}<li><code>{{ n }}</code> → {{ r }}</li>{% endfor %}</ul>
+<p><a href="/outputs/notes_log.md">notes_log.md</a> · <a href="/outputs/email_draft.txt">email_draft.txt</a> · <a href="/outputs/audit_log.jsonl">audit_log.jsonl</a></p>
+{% else %}<p class="bad"><b>Rejected.</b> No tool was called.</p>{% endif %}</div>
+<p><a href="/">← New analysis</a></p>
+{% endblock %}

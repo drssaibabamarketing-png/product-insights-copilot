@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block c %}
+<h1>Product Insights Copilot</h1>
+<p class="mut">Turns raw app-store reviews into a weekly product pulse and a support-ready fee explainer. Nothing is logged or drafted until you approve.</p>
+<div class="steps"><span>1 Analyse reviews</span><span>2 Pulse + fee explainer</span><span>3 You approve</span><span>4 Notes entry + email draft</span></div>
+{% if error %}<div class="card bad">{{ error }}</div>{% endif %}
+<form class="card" method="post" action="/analyze" enctype="multipart/form-data">
+<h2>Reviews CSV</h2>
+<p class="mut">Columns: review text + rating (+ date, optional). {% if has_default %}Leave empty to use the bundled <code>data/reviews.csv</code>.{% endif %}</p>
+<p><input type="file" name="csv" accept=".csv"></p>
+<p>Look-back window (weeks): <input type="number" name="weeks" value="12" min="1" max="52" style="width:80px"></p>
+<p>Email draft recipient (optional): <input type="text" name="to" placeholder="team@example.com"></p>
+<button class="go">Analyse reviews</button></form>
+{% endblock %}
