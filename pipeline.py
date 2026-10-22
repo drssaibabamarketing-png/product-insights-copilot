@@ -55,9 +55,30 @@ def load_reviews(path_or_buf, weeks: int = 12) -> tuple[pd.DataFrame, dict]:
             info["window"] = (start.date().isoformat(), end.date().isoformat())
     df = df.dropna(subset=["rating"])
     df["text"] = df["text"].map(clean_text)
+    before = len(df)
+    df = df[df["text"].map(is_english)]
+    info["dropped_non_english"] = before - len(df)
     df = df[df["text"].str.split().str.len() >= 4].drop_duplicates("text").reset_index(drop=True)
     info["rows_used"] = len(df)
     return df, info
+
+
+HINGLISH = {"hai", "nahi", "nhi", "bahut", "bohot", "accha", "acha", "achha", "kya", "mera", "meri", "aap", "bekar",
+            "paisa", "paise", "kaam", "lekin", "hota", "raha", "rahi", "karo", "karna", "bhai", "hain", "wala", "wali",
+            "hum", "tum", "kuch", "abhi", "bhi", "yeh", "mujhe", "sabse", "bahot", "chor", "loot"}
+COMPETITORS = r"zerodha|upstox|angel ?one|dhan\b|stoxkart|paytm money|5paisa|kite\b|fyers|icici ?direct"
+
+
+def is_english(t: str) -> bool:
+    """Keep English reviews only: drops non-Latin scripts (e.g. Devanagari) and romanised Hindi."""
+    letters = [c for c in t if c.isalpha()]
+    if not letters:
+        return False
+    if sum(ord(c) > 0x024F for c in letters) / len(letters) > 0.15:
+        return False
+    words = re.findall(r"[a-z]+", t.lower())
+    hits = sum(w in HINGLISH for w in words)
+    return not (hits >= 3 or (words and hits / len(words) >= 0.2))
 
 
 def clean_text(t: str) -> str:
@@ -70,7 +91,7 @@ def clean_text(t: str) -> str:
 # ---------------------------------------------------------------- themes
 # Lexicon used only to NAME clusters (clustering itself is unsupervised).
 THEME_LEXICON = {
-    "Pricing & charges confusion": r"charge|brokerage|brokrage|fee\b|fees|hidden|deduct|amc|loot|expens",
+    "Pricing & charges": r"charge|brokerage|brokrage|\bfees?\b|hidden|deduct|expense ratio|exit load",
     "Order execution & trading reliability": r"order|limit|market price|execut|sell|square off|stop ?loss|f&o|option|trade|slippage",
     "App performance & bugs": r"crash|slow|lag|hang|bug|glitch|load|update|server|error|not working|freez",
     "Customer support & trust": r"support|service|customer|response|complain|resolve|scam|fraud|cheat|trust|ticket",
@@ -137,7 +158,8 @@ def extract_quotes(df: pd.DataFrame, top_themes: list[dict], n: int = 3) -> list
     for t in top_themes[:n]:
         sub = df[df["cluster"] == t["cluster"]]
         rx = THEME_LEXICON.get(t["label"])
-        pool = sub[(sub["text"].str.len().between(50, 200))]
+        pool = sub[(sub["text"].str.len().between(50, 200)) &
+                   ~sub["text"].str.lower().str.contains(COMPETITORS, regex=True)]
         if rx:
             rel = pool[pool["text"].str.lower().str.contains(rx, regex=True)]
             pool = rel if len(rel) else pool
@@ -145,7 +167,7 @@ def extract_quotes(df: pd.DataFrame, top_themes: list[dict], n: int = 3) -> list
             neg = pool[pool["rating"] <= 2]
             pool = neg if len(neg) else pool
         if pool.empty:
-            pool = sub
+            pool = sub[~sub["text"].str.lower().str.contains(COMPETITORS, regex=True)]
         for _, r in pool.sort_values("dist").iterrows():
             if r["text"] not in seen:
                 seen.add(r["text"])
@@ -184,10 +206,16 @@ def detect_fee_issue(df: pd.DataFrame) -> dict:
     pool = conf if len(conf) else sub
     pool = pool[(pool["text"].str.len() >= 40) & (pool["text"].str.len() <= 230)].sort_values("rating")
     fee_quotes = pool["text"].head(2).tolist()
+    low_sub = sub["text"].str.lower()
+    n_hidden = int(low_sub.str.contains(r"hidden|other charges|extra charge|unclear|not transparent|why").sum())
+    n_comp = int(low_sub.str.contains(r"compar|other app|other platform|than other|cheaper|lower").sum())
+    parts = ([f"{n_comp} compare it with other platforms"] if n_comp else []) + \
+            ([f"{n_hidden} describe hidden, extra or unexplained charges"] if n_hidden else [])
+    signal = ("Among them, " + " and ".join(parts) + ".") if parts else "Users question what is being charged."
     return {
         "fee": top["fee"], "mentions": top["mentions"], "negative_mentions": top["negative_mentions"],
         "pct_of_reviews": top["pct_of_reviews"], "confusion_mentions": int(len(conf)),
-        "evidence_quotes": fee_quotes,
+        "evidence_quotes": fee_quotes, "signal_sentence": signal,
         "all_candidates": [{k: v for k, v in r.items() if k != "_idx"} for r in results],
     }
 
@@ -199,7 +227,8 @@ def wc(text: str) -> int:
 
 def generate_pulse(themes_top: list[dict], quotes: list[dict], fee: dict, n_reviews: int,
                    period: str, avg_rating: float) -> str:
-    t1, t2, t3 = (themes_top + [None] * 3)[:3]
+    t1 = themes_top[0]
+    worst = max(themes_top, key=lambda t: t["negative_pct"])
     lines = [f"**Weekly Product Pulse | {period}** ({n_reviews} reviews, avg {avg_rating}/5)", "",
              "**Top themes**"]
     for t in themes_top:
@@ -209,9 +238,9 @@ def generate_pulse(themes_top: list[dict], quotes: list[dict], fee: dict, n_revi
         lines.append(f"- \"{_trim(q['quote'], 160)}\" ({q['rating']}★)")
     lines += ["", "**Key observation**",
               f"{fee['mentions']} reviews ({fee['pct_of_reviews']}%) mention {fee['fee'].lower()}, "
-              f"{fee['negative_mentions']} of them 1-2 stars. Users compare the fee with other apps "
-              "and are unsure what \"other\" charges apply on top of brokerage. "
-              f"\"{t1['label']}\" is the largest theme.", "",
+              f"{fee['negative_mentions']} of them 1-2 stars. {fee['signal_sentence']} "
+              f"\"{t1['label']}\" is the largest theme; \"{worst['label']}\" is the most negative "
+              f"({worst['negative_pct']}% rated 1-2 stars).", "",
               "**Action ideas**",
               "1. Show a full charge breakup (brokerage, taxes, statutory charges) on the order screen before confirming.",
               "2. Add a plain-language \"why was I charged?\" link beside every ledger and contract-note line.",
